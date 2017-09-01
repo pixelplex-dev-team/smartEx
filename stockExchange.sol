@@ -1,5 +1,7 @@
 pragma solidity ^0.4.11;
 
+import './oraclizeAPI.sol';
+
 contract Object {
     address public owner;
 
@@ -21,7 +23,7 @@ contract Object {
     }
 }
 
-contract StockExchange is Object {
+contract StockExchange is Object, usingOraclize {
 
     struct Order {
         address creator;
@@ -34,30 +36,45 @@ contract StockExchange is Object {
 
     Order[] public orders;
 
-    uint248 public rate = 1.0e9;
+    uint248 public rate = 0;
+
+    mapping(bytes32 => bool) public queriesQueue;
+    
+    bool updaterIsRunning = false;
 
     event OrderCreated(
-        uint orderId,
+        uint    orderId,
         address creator,
         uint248 amount,
         uint248 leverage,
-        bool factor,
-        uint248 rate
+        bool    factor,
+        uint248 openRate
     );
     event OrderClosed(
-        uint orderId,
+        uint    orderId,
         address creator,
         uint248 creationAmount,
         uint248 closingAmount,
         uint248 leverage,
-        bool factor,
+        bool    factor,
         uint248 creationRate,
         uint248 closingRate,
-        string initiator
+        string  initiator
     );
+    event RateUpdated(string newRate, bytes32 queryId);
+    event UpdaterStatusUpdated(string status);
+
+    function() payable {
+        if(!updaterIsRunning){
+            updaterIsRunning = true;
+            UpdaterStatusUpdated('running');
+            updateRate();
+        }
+    }
 
     //factor: true for buying | false for selling
     function openOrder(uint248 leverage, bool factor) validateLeverage(leverage) validateOrderValue() payable {
+        require(rate != 0);
         uint orderId = orders.length;
         orders.push(Order({
             creator : msg.sender,
@@ -88,17 +105,33 @@ contract StockExchange is Object {
         processOrderClosing(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
     }
 
-    ///should be multiplied by rateMultiplier
-    function updateRate(uint248 _rate) onlyOwner() {
-        rate = _rate;
+    function updateRate() internal {
+        if(oraclize_getPrice("URL") < this.balance){
+            bytes32 queryId = oraclize_query(60, "URL", "json(https://api.kraken.com/0/public/Ticker?pair=ETHUSD).result.XETHZUSD.c[0]");
+            queriesQueue[queryId] = false;
+        } else {
+            updaterIsRunning = false;
+            UpdaterStatusUpdated('stopped');
+        }
+    }
+
+    function __callback(bytes32 queryId, string result) {
+        require(msg.sender == oraclize_cbAddress());
+        if(queriesQueue[queryId]){
+            return;
+        }
+        rate = uint248(parseInt(result, 9));
+        queriesQueue[queryId] = true;
+        RateUpdated(result, queryId);
         for(uint i = 0; i < orders.length; i++){
            if(!orders[i].closed){
                int256 resultAmount = calculateAmount(orders[i]);
                if(!(resultAmount > 0)){
                    processOrderClosing(i, resultAmount, 'contract');
                }
-           } 
+           }
         }
+        updateRate();
     }
 
     function processOrderClosing(uint orderId, int256 resultAmount, string initiator) internal {
@@ -131,6 +164,4 @@ contract StockExchange is Object {
         require(msg.value > 0);
         _;
     }
-
-    function() payable {}
 }
