@@ -1,84 +1,171 @@
 pragma solidity ^0.4.11;
 
-contract Owned {
+import './oraclizeAPI.sol';
+
+contract Object {
     address public owner;
 
-    function setOwner(address _owner) onlyOwner
-    { owner = _owner; }
+    function Object() {
+        owner = msg.sender;
+    }
 
-    modifier onlyOwner { require(msg.sender == owner); _; }
+    function setOwner(address _owner) onlyOwner() {
+        owner = _owner;
+    }
+
+    function destroy() onlyOwner() {
+        suicide(msg.sender);
+    }
+
+    modifier onlyOwner(){
+        require(msg.sender == owner);
+        _;
+    }
 }
 
-contract Destroyable {
-    address public hammer;
-
-    function setHammer(address _hammer) onlyHammer
-    { hammer = _hammer; }
-
-    function destroy() onlyHammer
-    { suicide(msg.sender); }
-
-    modifier onlyHammer { require(msg.sender == hammer); _; }
-}
-
-contract StockExchange is Owned, Destroyable {
+contract StockExchange is Object, usingOraclize {
 
     struct Order {
         address creator;
-        uint amount;
-        uint leverage;
-        int8 factor;
-        uint rate;
+        uint248 amount;
+        uint248 leverage;
+        bool factor;
+        uint248 rate;
+        bool closed;
     }
 
+    Order[] public orders;
 
-    uint public rate = 1.0e9;
+    uint248 public rate = 0;
 
-    mapping(uint => Order) public orders;
+    string private url = '';
 
-    uint public lastOrderId = 0;
+    mapping(bytes32 => bool) public queriesQueue;
+    
+    bool updaterIsRunning = false;
 
-    function StockExchange(){
-        owner  = msg.sender;
-        hammer = msg.sender;
+    event OrderCreated(
+        uint    orderId,
+        address creator,
+        uint248 amount,
+        uint248 leverage,
+        bool    factor,
+        uint248 openRate
+    );
+    event OrderClosed(
+        uint    orderId,
+        address creator,
+        uint248 creationAmount,
+        uint248 closingAmount,
+        uint248 leverage,
+        bool    factor,
+        uint248 creationRate,
+        uint248 closingRate,
+        string  initiator
+    );
+    event RateUpdated(string newRate, bytes32 queryId);
+    event UpdaterStatusUpdated(string status);
+
+    function() payable {
+        if(!updaterIsRunning && bytes(url).length != 0){
+            updaterIsRunning = true;
+            UpdaterStatusUpdated('running');
+            updateRate();
+        }
     }
 
-    function createOrder(uint leverage, int8 factor) validateLeverage(leverage) validateFactor(factor) validateOrderValue() payable {
-        lastOrderId = lastOrderId + 1;
-        orders[lastOrderId] = Order({
+    function setUrl(string _url) internal {
+        url = _url;
+    }
+
+    //factor: true for buying | false for selling
+    function openOrder(uint248 leverage, bool factor) validateLeverage(leverage) validateOrderValue() payable {
+        require(rate != 0);
+        uint orderId = orders.length;
+        orders.push(Order({
             creator : msg.sender,
-            amount  : msg.value,
+            amount  : uint248(msg.value),
             leverage: leverage,
             factor  : factor,
-            rate    : rate
-        });
+            rate    : rate,
+            closed  : false
+        }));
+        OrderCreated(
+            orderId,
+            msg.sender,
+            uint248(msg.value),
+            leverage,
+            factor,
+            rate
+        );
     }
 
-    function cancelOrder(uint orderId) {
+    function closeOrder(uint orderId) {
         require(msg.sender == owner || msg.sender == orders[orderId].creator);
-        delete orders[orderId];
+        require(!orders[orderId].closed);
+
+        int256 resultAmount = calculateAmount(orders[orderId]);
+        if(resultAmount > 0){
+            orders[orderId].creator.transfer(uint256(resultAmount));
+        }
+        processOrderClosing(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
     }
 
-    ///should be multiplied by rateMultiplier
-    function updateRate(uint _rate) adminOnly {
-        rate = _rate;
+    function updateRate() internal {
+        if(oraclize_getPrice("URL") < this.balance){
+            bytes32 queryId = oraclize_query(60, "URL", url);
+            queriesQueue[queryId] = false;
+        } else {
+            updaterIsRunning = false;
+            UpdaterStatusUpdated('stopped');
+        }
     }
 
-    modifier adminOnly() {
-        require(msg.sender == owner);
-        _; 
+    function __callback(bytes32 queryId, string result) {
+        require(msg.sender == oraclize_cbAddress());
+        if(queriesQueue[queryId]){
+            return;
+        }
+        rate = uint248(parseInt(result, 9));
+        queriesQueue[queryId] = true;
+        RateUpdated(result, queryId);
+        for(uint i = 0; i < orders.length; i++){
+           if(!orders[i].closed){
+               int256 resultAmount = calculateAmount(orders[i]);
+               if(!(resultAmount > 0)){
+                   processOrderClosing(i, resultAmount, 'contract');
+               }
+           }
+        }
+        updateRate();
     }
-    
-    modifier validateLeverage(uint _leverage){
+
+    function processOrderClosing(uint orderId, int256 resultAmount, string initiator) internal {
+        orders[orderId].closed = true;
+
+        OrderClosed(
+            orderId,
+            orders[orderId].creator,
+            uint248(orders[orderId].amount),
+            resultAmount > 0 ? uint248(resultAmount) : 0,
+            orders[orderId].leverage,
+            orders[orderId].factor,
+            orders[orderId].rate,
+            rate,
+            initiator
+        );
+    }
+
+    function calculateAmount(Order order) internal returns(int256) {
+        int256 delta =  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) * int256(order.leverage) ;
+        return order.factor ? (order.amount + delta) : (order.amount - delta);
+    }
+
+    modifier validateLeverage(uint248 _leverage){
         require(true);
         _;
     }
     
-    modifier validateFactor(int8 _factor){
-        require(_factor == -1 || _factor == 1);
-        _;
-    }
-
     modifier validateOrderValue(){
         require(msg.value > 0);
         _;
