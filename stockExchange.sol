@@ -14,7 +14,7 @@ contract Object {
     }
 
     function destroy() onlyOwner() {
-        suicide(msg.sender);
+        selfdestruct(msg.sender);
     }
 
     modifier onlyOwner(){
@@ -92,8 +92,11 @@ contract StockExchange is Object, usingOraclize {
     }
 
     //factor: true for buying | false for selling
-    function openOrder(uint248 leverage, bool factor) validateLeverage(leverage) validateOrderValue() payable {
+    function openOrder(uint248 leverage, bool factor) payable {
         require(rate != 0);
+        require(msg.value > 0);
+        require(leverage >= 1 && leverage <= 100);
+
         uint orderId = orders.length;
         uint _createDate = now;
         orders.push(Order({
@@ -118,12 +121,11 @@ contract StockExchange is Object, usingOraclize {
     }
 
     function approveOrder(uint orderId) onlyOwner() payable {
-        require(
-            orders[orderId].amount != 0 &&
-            !orders[orderId].closed &&
-            !orders[orderId].approved &&
-            uint248(msg.value) >= orders[orderId].amount
-        );
+        require(orders[orderId].amount != 0);
+        require(!orders[orderId].closed);
+        require(!orders[orderId].approved); 
+        require(uint248(msg.value) >= orders[orderId].amount); 
+
         orders[orderId].approved = true;
         OrderApproved(
             orderId, 
@@ -165,7 +167,7 @@ contract StockExchange is Object, usingOraclize {
             if(!orders[i].closed){
                 if(orders[i].approved){
                     int256 resultAmount = calculateAmount(orders[i]);
-                    if(!(resultAmount > 0)){
+                    if(resultAmount <= 0){
                         processOrderClosing(i, resultAmount, 'contract');
                     }
                 } else {
@@ -210,17 +212,7 @@ contract StockExchange is Object, usingOraclize {
     }
 
     function calculateAmount(Order order) internal returns(int256) {
-        int256 delta =  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) * int256(order.leverage) ;
+        int256 delta = int256(order.leverage) *  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) ;
         return order.factor ? (order.amount + delta) : (order.amount - delta);
-    }
-
-    modifier validateLeverage(uint248 _leverage){
-        require(true);
-        _;
-    }
-    
-    modifier validateOrderValue(){
-        require(msg.value > 0);
-        _;
     }
 }
