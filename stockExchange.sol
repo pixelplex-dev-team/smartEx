@@ -14,7 +14,7 @@ contract Object {
     }
 
     function destroy() onlyOwner() {
-        suicide(msg.sender);
+        selfdestruct(msg.sender);
     }
 
     modifier onlyOwner(){
@@ -73,8 +73,8 @@ contract StockExchange is Object, usingOraclize {
     }
 
     //factor: true for buying | false for selling
-    function openOrder(uint248 leverage, bool factor) validateLeverage(leverage) validateOrderValue() payable {
-        require(rate != 0);
+    function openOrder(uint248 leverage, bool factor) payable {
+        require(rate != 0 && msg.value > 0 && leverage >= 1 && leverage <= 100);
         uint orderId = orders.length;
         orders.push(Order({
             creator : msg.sender,
@@ -126,7 +126,7 @@ contract StockExchange is Object, usingOraclize {
         for(uint i = 0; i < orders.length; i++){
            if(!orders[i].closed){
                int256 resultAmount = calculateAmount(orders[i]);
-               if(!(resultAmount > 0)){
+               if(resultAmount <= 0){
                    processOrderClosing(i, resultAmount, 'contract');
                }
            }
@@ -151,17 +151,7 @@ contract StockExchange is Object, usingOraclize {
     }
 
     function calculateAmount(Order order) internal returns(int256) {
-        int256 delta =  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) * int256(order.leverage) ;
+        int256 delta = int256(order.leverage) *  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) ;
         return order.factor ? (order.amount + delta) : (order.amount - delta);
-    }
-
-    modifier validateLeverage(uint248 _leverage){
-        require(true);
-        _;
-    }
-    
-    modifier validateOrderValue(){
-        require(msg.value > 0);
-        _;
     }
 }
