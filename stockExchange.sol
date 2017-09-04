@@ -38,6 +38,8 @@ contract StockExchange is Object, usingOraclize {
 
     uint248 public rate = 0;
 
+    string private url = '';
+
     mapping(bytes32 => bool) public queriesQueue;
     
     bool updaterIsRunning = false;
@@ -65,11 +67,15 @@ contract StockExchange is Object, usingOraclize {
     event UpdaterStatusUpdated(string status);
 
     function() payable {
-        if(!updaterIsRunning){
+        if(!updaterIsRunning && bytes(url).length != 0){
             updaterIsRunning = true;
             UpdaterStatusUpdated('running');
             updateRate();
         }
+    }
+
+    function setUrl(string _url) internal {
+        url = _url;
     }
 
     //factor: true for buying | false for selling
@@ -107,7 +113,7 @@ contract StockExchange is Object, usingOraclize {
 
     function updateRate() internal {
         if(oraclize_getPrice("URL") < this.balance){
-            bytes32 queryId = oraclize_query(60, "URL", "json(https://api.kraken.com/0/public/Ticker?pair=ETHUSD).result.XETHZUSD.c[0]");
+            bytes32 queryId = oraclize_query(60, "URL", url);
             queriesQueue[queryId] = false;
         } else {
             updaterIsRunning = false;
