@@ -74,7 +74,10 @@ contract StockExchange is Object, usingOraclize {
 
     //factor: true for buying | false for selling
     function openOrder(uint248 leverage, bool factor) payable {
-        require(rate != 0 && msg.value > 0 && leverage >= 1 && leverage <= 100);
+        require(rate != 0);
+        require(msg.value > 0);
+        require(leverage >= 1 && leverage <= 100);
+
         uint orderId = orders.length;
         orders.push(Order({
             creator : msg.sender,
