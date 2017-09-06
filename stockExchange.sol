@@ -26,11 +26,13 @@ contract Object {
 contract StockExchange is Object, usingOraclize {
 
     struct Order {
+        uint createDate;
         address creator;
         uint248 amount;
         uint248 leverage;
         bool factor;
         uint248 rate;
+        bool approved;
         bool closed;
     }
 
@@ -46,6 +48,16 @@ contract StockExchange is Object, usingOraclize {
 
     event OrderCreated(
         uint    orderId,
+        uint    createDate,
+        address creator,
+        uint248 amount,
+        uint248 leverage,
+        bool    factor,
+        uint248 openRate
+    );
+    event OrderApproved(
+        uint    orderId,
+        uint    createDate,
         address creator,
         uint248 amount,
         uint248 leverage,
@@ -54,6 +66,7 @@ contract StockExchange is Object, usingOraclize {
     );
     event OrderClosed(
         uint    orderId,
+        uint    createDate,
         address creator,
         uint248 creationAmount,
         uint248 closingAmount,
@@ -85,16 +98,20 @@ contract StockExchange is Object, usingOraclize {
         require(leverage >= 1 && leverage <= 100);
 
         uint orderId = orders.length;
+        uint _createDate = now;
         orders.push(Order({
+            createDate : _createDate,
             creator : msg.sender,
             amount  : uint248(msg.value),
             leverage: leverage,
             factor  : factor,
             rate    : rate,
+            approved: false,
             closed  : false
         }));
         OrderCreated(
             orderId,
+            _createDate,
             msg.sender,
             uint248(msg.value),
             leverage,
@@ -103,14 +120,28 @@ contract StockExchange is Object, usingOraclize {
         );
     }
 
+    function approveOrder(uint orderId) onlyOwner() payable {
+        require(orders[orderId].amount != 0);
+        require(!orders[orderId].closed);
+        require(!orders[orderId].approved); 
+        require(uint248(msg.value) >= orders[orderId].amount); 
+
+        orders[orderId].approved = true;
+        OrderApproved(
+            orderId, 
+            orders[orderId].createDate,
+            orders[orderId].creator,
+            orders[orderId].amount,
+            orders[orderId].leverage,
+            orders[orderId].factor,
+            orders[orderId].rate
+        );
+    }
+
     function closeOrder(uint orderId) {
         require(msg.sender == owner || msg.sender == orders[orderId].creator);
         require(!orders[orderId].closed);
-
-        int256 resultAmount = calculateAmount(orders[orderId]);
-        if(resultAmount > 0){
-            orders[orderId].creator.transfer(uint256(resultAmount));
-        }
+        int256 resultAmount = orders[orderId].approved ? calculateAmount(orders[orderId]) : int256(orders[orderId].amount);
         processOrderClosing(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
     }
 
@@ -133,24 +164,45 @@ contract StockExchange is Object, usingOraclize {
         queriesQueue[queryId] = true;
         RateUpdated(result, queryId);
         for(uint i = 0; i < orders.length; i++){
-           if(!orders[i].closed){
-               int256 resultAmount = calculateAmount(orders[i]);
-               if(resultAmount <= 0){
-                   processOrderClosing(i, resultAmount, 'contract');
-               }
-           }
+            if(!orders[i].closed){
+                if(orders[i].approved){
+                    int256 resultAmount = calculateAmount(orders[i]);
+                    if(resultAmount <= 0){
+                        processOrderClosing(i, resultAmount, 'contract');
+                    }
+                } else {
+                    if(now >= orders[i].createDate + 10 minutes){
+                        processOrderClosing(i, orders[i].amount, 'contract');
+                    }
+                }
+            }
         }
+
         updateRate();
     }
 
     function processOrderClosing(uint orderId, int256 resultAmount, string initiator) internal {
+        uint sendingAmount = resultAmount > 0 ? uint(resultAmount) : 0;
+        if(sendingAmount > 0){
+            uint maxAmount = orders[orderId].amount * 2;
+            if(sendingAmount > maxAmount){
+                sendingAmount = maxAmount;
+            }
+            //sendingAmount -= tx.gasprice * 21000;
+            //if(sendingAmount < 0){
+            //    sendingAmount = 0;
+            //}
+            if(sendingAmount > 0){
+                orders[orderId].creator.transfer(sendingAmount); 
+            }
+        }
         orders[orderId].closed = true;
-
         OrderClosed(
             orderId,
+            orders[orderId].createDate,
             orders[orderId].creator,
             uint248(orders[orderId].amount),
-            resultAmount > 0 ? uint248(resultAmount) : 0,
+            uint248(sendingAmount),
             orders[orderId].leverage,
             orders[orderId].factor,
             orders[orderId].rate,
