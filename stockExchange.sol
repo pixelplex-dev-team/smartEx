@@ -192,9 +192,9 @@ contract StockExchange is Object, usingOraclize {
             //if(sendingAmount < 0){
             //    sendingAmount = 0;
             //}
-            //if(sendingAmount > 0){
-            //    orders[orderId].creator.transfer(sendingAmount); 
-            //}
+            if(sendingAmount > 0){
+                orders[orderId].creator.transfer(sendingAmount); 
+            }
         }
         orders[orderId].closed = true;
         OrderClosed(
