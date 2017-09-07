@@ -167,7 +167,10 @@ contract StockExchange is Object, usingOraclize {
             if(!orders[i].closed){
                 if(orders[i].approved){
                     int256 resultAmount = calculateAmount(orders[i]);
-                    if(resultAmount <= 0){
+                    if(resultAmount >= int256(orders[i].amount * 180 / 100)){
+                        processOrderClosing(i, resultAmount, 'contract');
+                    }
+                    if(resultAmount <= int256(orders[i].amount * 20 / 100)){
                         processOrderClosing(i, resultAmount, 'contract');
                     }
                 } else {
@@ -182,20 +185,16 @@ contract StockExchange is Object, usingOraclize {
     }
 
     function processOrderClosing(uint orderId, int256 resultAmount, string initiator) internal {
-        uint sendingAmount = resultAmount > 0 ? uint(resultAmount) : 0;
-        if(sendingAmount > 0){
-            uint maxAmount = orders[orderId].amount * 2;
-            if(sendingAmount > maxAmount){
-                sendingAmount = maxAmount;
-            }
-            //sendingAmount -= tx.gasprice * 21000;
-            //if(sendingAmount < 0){
-            //    sendingAmount = 0;
-            //}
-            if(sendingAmount > 0){
-                orders[orderId].creator.transfer(sendingAmount); 
-            }
-        }
+        uint sendingAmount = uint(resultAmount); 
+        uint maxAmount = uint(orders[orderId].amount * 180 / 100);
+        uint minAmount = uint(orders[orderId].amount * 20 / 100);
+
+        if(sendingAmount > maxAmount) {
+            sendingAmount = maxAmount;
+        } else if(sendingAmount < minAmount) {
+            sendingAmount = minAmount;
+        } 
+        orders[orderId].creator.transfer(sendingAmount);
         orders[orderId].closed = true;
         OrderClosed(
             orderId,
