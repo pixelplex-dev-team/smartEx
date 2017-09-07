@@ -83,8 +83,22 @@ contract StockExchange is Object, usingOraclize {
         if(!updaterIsRunning && bytes(url).length != 0){
             updaterIsRunning = true;
             UpdaterStatusUpdated('running');
-            updateRate();
+            _requestRate();
         }
+    }
+
+    function destroy() onlyOwner() {
+        for(uint i = 0; i < orders.length; i++){
+            if(!orders[i].closed){
+                if(orders[i].approved){
+                    int256 resultAmount = _calculateAmout(orders[i]);
+                    _processOrderCompletion(i, resultAmount, 'contract');
+                } else {
+                    _processOrderCompletion(i, orders[i].amount, 'contract');
+                }
+            }
+        }
+        Object.destroy();
     }
 
     function setUrl(string _url) internal {
@@ -141,11 +155,24 @@ contract StockExchange is Object, usingOraclize {
     function closeOrder(uint orderId) {
         require(msg.sender == owner || msg.sender == orders[orderId].creator);
         require(!orders[orderId].closed);
-        int256 resultAmount = orders[orderId].approved ? calculateAmount(orders[orderId]) : int256(orders[orderId].amount);
-        processOrderClosing(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
+        int256 resultAmount = orders[orderId].approved ? _calculateAmout(orders[orderId]) : int256(orders[orderId].amount);
+        _processOrderCompletion(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
     }
 
-    function updateRate() internal {
+    //oraclize.it callback
+    function __callback(bytes32 queryId, string result) {
+        require(msg.sender == oraclize_cbAddress());
+        if(queriesQueue[queryId]) return;
+        queriesQueue[queryId] = true;
+
+        rate = uint248(parseInt(result, 9));
+        RateUpdated(result, queryId);
+
+        _processOrderCheck();
+        _requestRate();
+    }
+
+    function _requestRate() internal {
         if(oraclize_getPrice("URL") < this.balance){
             bytes32 queryId = oraclize_query(60, "URL", url);
             queriesQueue[queryId] = false;
@@ -155,36 +182,27 @@ contract StockExchange is Object, usingOraclize {
         }
     }
 
-    function __callback(bytes32 queryId, string result) {
-        require(msg.sender == oraclize_cbAddress());
-        if(queriesQueue[queryId]){
-            return;
-        }
-        rate = uint248(parseInt(result, 9));
-        queriesQueue[queryId] = true;
-        RateUpdated(result, queryId);
+    function _processOrderCheck() internal {
         for(uint i = 0; i < orders.length; i++){
             if(!orders[i].closed){
                 if(orders[i].approved){
-                    int256 resultAmount = calculateAmount(orders[i]);
+                    int256 resultAmount = _calculateAmout(orders[i]);
                     if(resultAmount >= int256(orders[i].amount * 180 / 100)){
-                        processOrderClosing(i, resultAmount, 'contract');
+                        _processOrderCompletion(i, resultAmount, 'contract');
                     }
                     if(resultAmount <= int256(orders[i].amount * 20 / 100)){
-                        processOrderClosing(i, resultAmount, 'contract');
+                        _processOrderCompletion(i, resultAmount, 'contract');
                     }
                 } else {
                     if(now >= orders[i].createDate + 10 minutes){
-                        processOrderClosing(i, orders[i].amount, 'contract');
+                        _processOrderCompletion(i, orders[i].amount, 'contract');
                     }
                 }
             }
         }
-
-        updateRate();
     }
 
-    function processOrderClosing(uint orderId, int256 resultAmount, string initiator) internal {
+    function _processOrderCompletion(uint orderId, int256 resultAmount, string initiator) internal {
         uint sendingAmount = uint(resultAmount); 
         uint maxAmount = uint(orders[orderId].amount * 180 / 100);
         uint minAmount = uint(orders[orderId].amount * 20 / 100);
@@ -210,7 +228,7 @@ contract StockExchange is Object, usingOraclize {
         );
     }
 
-    function calculateAmount(Order order) internal returns(int256) {
+    function _calculateAmout(Order order) internal returns(int256) {
         int256 delta = int256(order.leverage) *  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) ;
         return order.factor ? (order.amount + delta) : (order.amount - delta);
     }
