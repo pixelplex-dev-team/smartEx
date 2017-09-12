@@ -13,10 +13,6 @@ contract Object {
         owner = _owner;
     }
 
-    function destroy() onlyOwner() {
-        selfdestruct(msg.sender);
-    }
-
     modifier onlyOwner(){
         require(msg.sender == owner);
         _;
@@ -91,14 +87,14 @@ contract StockExchange is Object, usingOraclize {
         for(uint i = 0; i < orders.length; i++){
             if(!orders[i].closed){
                 if(orders[i].approved){
-                    int256 resultAmount = _calculateAmout(orders[i]);
+                    int256 resultAmount = _calculateAmount(orders[i]);
                     _processOrderCompletion(i, resultAmount, 'contract');
                 } else {
                     _processOrderCompletion(i, orders[i].amount, 'contract');
                 }
             }
         }
-        Object.destroy();
+        selfdestruct(msg.sender);    
     }
 
     function setUrl(string _url) internal {
@@ -112,9 +108,8 @@ contract StockExchange is Object, usingOraclize {
         require(leverage >= 1 && leverage <= 100);
 
         uint orderId = orders.length;
-        uint _createDate = now;
         orders.push(Order({
-            createDate : _createDate,
+            createDate : now,
             creator : msg.sender,
             amount  : uint248(msg.value),
             leverage: leverage,
@@ -125,7 +120,7 @@ contract StockExchange is Object, usingOraclize {
         }));
         OrderCreated(
             orderId,
-            _createDate,
+            now,
             msg.sender,
             uint248(msg.value),
             leverage,
@@ -155,7 +150,7 @@ contract StockExchange is Object, usingOraclize {
     function closeOrder(uint orderId) {
         require(msg.sender == owner || msg.sender == orders[orderId].creator);
         require(!orders[orderId].closed);
-        int256 resultAmount = orders[orderId].approved ? _calculateAmout(orders[orderId]) : int256(orders[orderId].amount);
+        int256 resultAmount = orders[orderId].approved ? _calculateAmount(orders[orderId]) : int256(orders[orderId].amount);
         _processOrderCompletion(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
     }
 
@@ -186,11 +181,8 @@ contract StockExchange is Object, usingOraclize {
         for(uint i = 0; i < orders.length; i++){
             if(!orders[i].closed){
                 if(orders[i].approved){
-                    int256 resultAmount = _calculateAmout(orders[i]);
-                    if(resultAmount >= int256(orders[i].amount * 180 / 100)){
-                        _processOrderCompletion(i, resultAmount, 'contract');
-                    }
-                    if(resultAmount <= int256(orders[i].amount * 20 / 100)){
+                    int256 resultAmount = _calculateAmount(orders[i]);
+                    if(resultAmount >= int256(orders[i].amount * 180 / 100) || resultAmount <= int256(orders[i].amount * 20 / 100)){
                         _processOrderCompletion(i, resultAmount, 'contract');
                     }
                 } else {
@@ -228,7 +220,7 @@ contract StockExchange is Object, usingOraclize {
         );
     }
 
-    function _calculateAmout(Order order) internal returns(int256) {
+    function _calculateAmount(Order order) internal returns(int256) {
         int256 delta = int256(order.leverage) *  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) ;
         return order.factor ? (order.amount + delta) : (order.amount - delta);
     }
