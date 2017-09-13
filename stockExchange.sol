@@ -13,10 +13,6 @@ contract Object {
         owner = _owner;
     }
 
-    function destroy() onlyOwner() {
-        selfdestruct(msg.sender);
-    }
-
     modifier onlyOwner(){
         require(msg.sender == owner);
         _;
@@ -83,8 +79,22 @@ contract StockExchange is Object, usingOraclize {
         if(!updaterIsRunning && bytes(url).length != 0){
             updaterIsRunning = true;
             UpdaterStatusUpdated('running');
-            updateRate();
+            _requestRate();
         }
+    }
+
+    function destroy() onlyOwner() {
+        for(uint i = 0; i < orders.length; i++){
+            if(!orders[i].closed){
+                if(orders[i].approved){
+                    int256 resultAmount = _calculateAmount(orders[i]);
+                    _processOrderCompletion(i, resultAmount, 'contract');
+                } else {
+                    _processOrderCompletion(i, orders[i].amount, 'contract');
+                }
+            }
+        }
+        selfdestruct(msg.sender);    
     }
 
     function setUrl(string _url) internal {
@@ -98,9 +108,8 @@ contract StockExchange is Object, usingOraclize {
         require(leverage >= 1 && leverage <= 100);
 
         uint orderId = orders.length;
-        uint _createDate = now;
         orders.push(Order({
-            createDate : _createDate,
+            createDate : now,
             creator : msg.sender,
             amount  : uint248(msg.value),
             leverage: leverage,
@@ -111,7 +120,7 @@ contract StockExchange is Object, usingOraclize {
         }));
         OrderCreated(
             orderId,
-            _createDate,
+            now,
             msg.sender,
             uint248(msg.value),
             leverage,
@@ -141,11 +150,24 @@ contract StockExchange is Object, usingOraclize {
     function closeOrder(uint orderId) {
         require(msg.sender == owner || msg.sender == orders[orderId].creator);
         require(!orders[orderId].closed);
-        int256 resultAmount = orders[orderId].approved ? calculateAmount(orders[orderId]) : int256(orders[orderId].amount);
-        processOrderClosing(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
+        int256 resultAmount = orders[orderId].approved ? _calculateAmount(orders[orderId]) : int256(orders[orderId].amount);
+        _processOrderCompletion(orderId, resultAmount, msg.sender == orders[orderId].creator ? 'trader' : 'admin');
     }
 
-    function updateRate() internal {
+    //oraclize.it callback
+    function __callback(bytes32 queryId, string result) {
+        require(msg.sender == oraclize_cbAddress());
+        if(queriesQueue[queryId]) return;
+        queriesQueue[queryId] = true;
+
+        rate = uint248(parseInt(result, 9));
+        RateUpdated(result, queryId);
+
+        _processOrderCheck();
+        _requestRate();
+    }
+
+    function _requestRate() internal {
         if(oraclize_getPrice("URL") < this.balance){
             bytes32 queryId = oraclize_query(60, "URL", url);
             queriesQueue[queryId] = false;
@@ -155,47 +177,34 @@ contract StockExchange is Object, usingOraclize {
         }
     }
 
-    function __callback(bytes32 queryId, string result) {
-        require(msg.sender == oraclize_cbAddress());
-        if(queriesQueue[queryId]){
-            return;
-        }
-        rate = uint248(parseInt(result, 9));
-        queriesQueue[queryId] = true;
-        RateUpdated(result, queryId);
+    function _processOrderCheck() internal {
         for(uint i = 0; i < orders.length; i++){
             if(!orders[i].closed){
                 if(orders[i].approved){
-                    int256 resultAmount = calculateAmount(orders[i]);
-                    if(resultAmount <= 0){
-                        processOrderClosing(i, resultAmount, 'contract');
+                    int256 resultAmount = _calculateAmount(orders[i]);
+                    if(resultAmount >= int256(orders[i].amount * 180 / 100) || resultAmount <= int256(orders[i].amount * 20 / 100)){
+                        _processOrderCompletion(i, resultAmount, 'contract');
                     }
                 } else {
                     if(now >= orders[i].createDate + 10 minutes){
-                        processOrderClosing(i, orders[i].amount, 'contract');
+                        _processOrderCompletion(i, orders[i].amount, 'contract');
                     }
                 }
             }
         }
-
-        updateRate();
     }
 
-    function processOrderClosing(uint orderId, int256 resultAmount, string initiator) internal {
-        uint sendingAmount = resultAmount > 0 ? uint(resultAmount) : 0;
-        if(sendingAmount > 0){
-            uint maxAmount = orders[orderId].amount * 2;
-            if(sendingAmount > maxAmount){
-                sendingAmount = maxAmount;
-            }
-            //sendingAmount -= tx.gasprice * 21000;
-            //if(sendingAmount < 0){
-            //    sendingAmount = 0;
-            //}
-            if(sendingAmount > 0){
-                orders[orderId].creator.transfer(sendingAmount); 
-            }
-        }
+    function _processOrderCompletion(uint orderId, int256 resultAmount, string initiator) internal {
+        uint sendingAmount = uint(resultAmount); 
+        uint maxAmount = uint(orders[orderId].amount * 180 / 100);
+        uint minAmount = uint(orders[orderId].amount * 20 / 100);
+
+        if(sendingAmount > maxAmount) {
+            sendingAmount = maxAmount;
+        } else if(sendingAmount < minAmount) {
+            sendingAmount = minAmount;
+        } 
+        orders[orderId].creator.transfer(sendingAmount);
         orders[orderId].closed = true;
         OrderClosed(
             orderId,
@@ -211,7 +220,7 @@ contract StockExchange is Object, usingOraclize {
         );
     }
 
-    function calculateAmount(Order order) internal returns(int256) {
+    function _calculateAmount(Order order) internal returns(int256) {
         int256 delta = int256(order.leverage) *  int256(rate - order.rate) * int256(order.amount) / int256(order.rate) ;
         return order.factor ? (order.amount + delta) : (order.amount - delta);
     }
